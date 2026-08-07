@@ -186,6 +186,84 @@ It also introduces new dependencies and failure modes:
 - proxy connection limits and timeouts, and
 - data-plane behavior when every origin is unhealthy.
 
+### 4.3 Competitive landscape
+
+This section compares product and control-plane patterns, not exact
+feature parity. Each provider has different network boundaries,
+resource hierarchies, and commercial packaging.
+
+| Dimension | Proposed AKS Fleet experience | GKE | Amazon EKS |
+|---|---|---|---|
+| Multi-cluster grouping | Fleet Manager member clusters | GKE fleets with a central config cluster | No single equivalent global-ingress control plane; clusters and traffic services are commonly managed separately |
+| Kubernetes API direction | Gateway API + MCS `ServiceImport`, with Azure policy objects under evaluation | Hosted Multi Cluster Ingress CRDs and hosted multi-cluster Gateway API; multi-cluster Gateway uses `ServiceImport` backends | AWS Load Balancer Controller manages per-cluster Ingress, Service, and Gateway resources |
+| Global HTTP(S) ingress | AFD Standard/Premium across member-cluster origins | Global external multi-cluster Application Load Balancer; regional and cross-regional internal GatewayClasses are also available | Commonly assembled from regional ALBs plus Route 53 or AWS Global Accelerator |
+| DNS and non-HTTP global traffic | ATM for public endpoints and protocols not proxied by AFD | Separate Cloud DNS and load-balancing products | Route 53 routing policies or Global Accelerator with ALB, NLB, EC2, or Elastic IP endpoints |
+| Private application connectivity | AFD Premium + Private Link to PLS-backed AKS endpoints | Cross-regional or regional internal multi-cluster GatewayClasses, subject to project and VPC topology restrictions | Private ALB/NLB patterns or VPC Lattice for service networking across VPCs and accounts |
+| WAF | AFD WAF, optional or policy-required | Cloud Armor on compatible Application Load Balancer backend services | AWS WAF on supported resources such as regional ALBs or global CloudFront distributions |
+| Controller operating model | Proposed Fleet-hosted or Fleet-managed controller with explicit ownership still to be decided | Google-hosted multi-cluster ingress/Gateway controllers independent of member-cluster workloads | Per-cluster load balancer controller plus separately managed global traffic services |
+
+#### GKE lessons
+
+GKE demonstrates a strongly integrated model:
+
+- clusters register to one fleet;
+- a central config cluster hosts multi-cluster ingress or Gateway
+  resources;
+- a Google-hosted controller programs shared load-balancing
+  infrastructure;
+- multi-cluster Gateway uses Gateway API and MCS `ServiceImport`;
+- cluster and Pod changes update the global backend set; and
+- the product offers explicit GatewayClasses for external, regional
+  internal, and cross-regional internal topologies.
+
+Relevant constraints are also instructive:
+
+- multi-cluster Gateway depends on MCS;
+- supported backends and topology are determined by GatewayClass;
+- clusters must satisfy fleet host-project and VPC restrictions;
+- quota and orphaned-resource behavior are documented; and
+- config-cluster or regional Fleet control-plane failure can stop
+  further programming while the existing load balancer remains.
+
+The primary lesson is that Fleet should expose a coherent
+placement-to-ingress workflow and capability classes rather than
+requiring customers to assemble raw Azure resources.
+
+#### Amazon EKS lessons
+
+The common EKS model separates local and global traffic management:
+
+- AWS Load Balancer Controller creates an ALB for Kubernetes Ingress
+  or Gateway and an NLB for a `LoadBalancer` Service;
+- Route 53 provides DNS-based latency, weighted, geolocation, and
+  failover policies;
+- Global Accelerator directs TCP or UDP traffic through static
+  anycast addresses to healthy regional ALB, NLB, EC2, or Elastic IP
+  endpoints; and
+- VPC Lattice addresses application networking and authorization
+  across VPCs and accounts.
+
+This gives customers composable building blocks, but the
+multi-cluster application, endpoint, health, and global-ingress
+lifecycle is generally assembled across services rather than
+represented by one EKS fleet API.
+
+The primary lesson is that Fleet must preserve provider choice between
+AFD and ATM while adding enough orchestration and status to avoid an
+AWS-style endpoint assembly burden.
+
+#### Implications for this RFC
+
+The competitive comparison supports:
+
+1. using Gateway API and MCS concepts where they fit;
+2. separating workload placement from global traffic policy;
+3. exposing provider and connectivity capability classes;
+4. making controller, hub, and orphan behavior explicit;
+5. supporting a managed end-to-end experience rather than only
+   documenting how to assemble Azure services; and
+6. retaining ATM alongside AFD for DNS and non-HTTP requirements.
+
 ## 5. Goals
 
 ### 5.1 Product goals
@@ -745,7 +823,139 @@ default API decision.
 
 ## 12. Multi-cluster and multi-region traffic model
 
-### 12.1 Origin identity
+### 12.1 Separate placement from global ingress
+
+Fleet Manager determines **where the application runs**. AFD or ATM
+determines **which eligible member-cluster endpoint receives client
+traffic**. These are related but independent control loops.
+
+```mermaid
+flowchart TD
+    App[Application resources] --> Placement[Fleet placement policy]
+    Placement --> East1[East US member cluster 1]
+    Placement --> East2[East US member cluster 2]
+    Placement --> West1[West Europe member cluster 1]
+    Placement --> Central1[Central US member cluster 1]
+
+    East1 --> Export1[Ready exported endpoint]
+    East2 --> Export2[Ready exported endpoint]
+    West1 --> Export3[Ready exported endpoint]
+    Central1 --> Export4[Ready exported endpoint]
+
+    Export1 --> GlobalPolicy[AFD or ATM global ingress policy]
+    Export2 --> GlobalPolicy
+    Export3 --> GlobalPolicy
+    Export4 --> GlobalPolicy
+    Client[Clients] --> GlobalPolicy
+```
+
+Application placement can use region, cluster, environment, or other
+Fleet-supported selection criteria. Global ingress must not infer
+traffic eligibility from placement success or Fleet membership alone.
+
+This separation allows:
+
+- an application to be placed before its endpoint receives traffic;
+- a cluster to remain in Fleet while being evacuated;
+- a replacement cluster to be validated at zero traffic;
+- global ingress to retain the last working configuration during a
+  placement-controller outage; and
+- application rollout and traffic rollout to have independent status
+  and rollback.
+
+### 12.2 Member endpoint eligibility
+
+A member cluster becomes eligible for global traffic only after all
+required layers are ready:
+
+1. the cluster is joined and selected by placement;
+2. application resources are available on the member;
+3. workloads satisfy the declared readiness policy;
+4. the local Service or ingress gateway has a usable endpoint;
+5. `ServiceExport` and `ServiceImport` discovery is complete;
+6. public-IP or PLS origin information is available;
+7. the AFD origin or ATM endpoint is programmed; and
+8. the provider health probe succeeds.
+
+```mermaid
+flowchart LR
+    Joined[Cluster joined] --> Selected[Selected by placement]
+    Selected --> Workload[Workload ready]
+    Workload --> LocalEndpoint[Service or gateway ready]
+    LocalEndpoint --> Exported[Export discovered]
+    Exported --> AzureEndpoint[AFD origin or ATM endpoint programmed]
+    AzureEndpoint --> Healthy[Provider health probe passing]
+    Healthy --> Eligible[Eligible for client traffic]
+```
+
+Status should expose each stage separately. A placed application can
+be unavailable, and an AFD or ATM endpoint can remain healthy while
+the surviving region lacks enough application capacity.
+
+### 12.3 Multi-region interaction with AFD and ATM
+
+| Deployment requirement | AFD behavior | Current Fleet ATM behavior |
+|---|---|---|
+| Active-active regions | Origins use the same priority; AFD applies health, latency sensitivity, and then weight | Positive-weight public endpoints participate in DNS responses according to ATM weighted routing |
+| Active-passive regions | Primary origins use a lower priority number; secondary origins become eligible after primary failure | The current Fleet API exposes weighted routing only; strict priority failover requires an ATM API enhancement or external automation |
+| Multiple clusters in one region | Each cluster or shared regional gateway is an origin; weights can represent relative capacity | Each exported public Service is an endpoint with its own weight |
+| Regional evacuation | Disable or drain every origin in the region independently from Fleet membership | Set endpoint weights according to the supported drain workflow; DNS caching affects completion time |
+| Public HTTP(S) origins | AFD Standard or Premium | Supported, but ATM remains DNS-only and does not provide L7 policy |
+| Private HTTP(S) origins | AFD Premium + PLS | Unsupported by the current Fleet ATM integration |
+| Public non-HTTP origins | Unsupported by AFD | Supported when the endpoint and health-probe contract are compatible |
+
+AFD and ATM are alternative global-ingress providers for one
+application endpoint. They should not be chained together. They can
+coexist temporarily during migration, or serve separate HTTP(S) and
+non-HTTP endpoints for the same application.
+
+### 12.4 Member-cluster lifecycle
+
+A cluster must be added in readiness order and removed in the reverse
+traffic-safe order:
+
+```mermaid
+flowchart TB
+    subgraph Add["Add member cluster"]
+        Join[Join Fleet] --> Select[Select through placement]
+        Select --> Deploy[Deploy application]
+        Deploy --> Endpoint[Create Service or ingress gateway]
+        Endpoint --> Export[Export endpoint]
+        Export --> Program[Program AFD origin or ATM endpoint]
+        Program --> Probe[Pass health probe]
+        Probe --> Enable[Enable production traffic]
+    end
+
+    subgraph Remove["Remove member cluster"]
+        Disable[Set weight to zero or disable] --> Drain[Wait for drain criteria]
+        Drain --> RemoveEndpoint[Remove AFD origin or ATM endpoint]
+        RemoveEndpoint --> RemoveExport[Remove ServiceExport]
+        RemoveExport --> RemovePlacement[Remove application placement]
+        RemovePlacement --> Leave[Remove cluster from Fleet]
+    end
+```
+
+For ATM, the drain interval must account for DNS TTL and client
+caching. For AFD, the drain interval must account for active proxied
+connections and configuration propagation.
+
+Removing a cluster from Fleet before removing its global endpoint can
+leave stale traffic targeting an application that is being deleted.
+The global-ingress controller therefore needs a conservative policy
+for unexpected membership loss:
+
+- mark the endpoint administratively ineligible;
+- preserve enough identity to delete the Azure resource;
+- avoid immediately deleting the last healthy regional endpoint; and
+- report whether cleanup, failover, or operator approval is pending.
+
+If the Fleet hub, placement controller, or global-ingress controller
+is unavailable, already programmed AFD and ATM data planes should
+continue serving their last known configuration. No new cluster,
+weight, route, or evacuation changes take effect until reconciliation
+resumes.
+
+### 12.5 Origin identity
 
 Every origin should have a stable identity derived from:
 
@@ -761,7 +971,7 @@ The controller must not infer ownership from an ambiguous name prefix
 alone. Azure tags and Kubernetes owner status should record the
 mapping needed for cleanup and drift detection.
 
-### 12.2 Priority and weight
+### 12.6 Priority and weight
 
 AFD origin selection is ordered:
 
@@ -779,7 +989,7 @@ The API must therefore avoid promising exact global percentages.
 Status and documentation should describe weights as relative intent
 within AFD's selection algorithm.
 
-### 12.3 Recommended patterns
+### 12.7 Recommended AFD patterns
 
 | Pattern | Priority | Weight | Use |
 |---|---|---|---|
@@ -789,7 +999,7 @@ within AFD's selection algorithm.
 | Progressive delivery | Same | Gradually adjusted | Version or cluster migration |
 | Administrative evacuation | Disable origin or set approved policy state | Not relied upon | Planned removal of a cluster or region |
 
-### 12.4 Private Link regional redundancy
+### 12.8 Private Link regional redundancy
 
 For private origins, the **AFD Private Link region** is a separate
 choice from the AKS origin region. Microsoft recommends selecting a
@@ -1544,5 +1754,14 @@ locking the implementation to one origin and policy model.
 - [MCS API overview](https://multicluster.sigs.k8s.io/concepts/multicluster-services-api/)
 - [KEP-1645: Multi-Cluster Services API](https://github.com/kubernetes/enhancements/tree/master/keps/sig-multicluster/1645-multi-cluster-services-api)
 - [Gateway API](https://gateway-api.sigs.k8s.io/)
+- [GKE Multi Cluster Ingress](https://cloud.google.com/kubernetes-engine/docs/concepts/multi-cluster-ingress)
+- [GKE multi-cluster Gateway environment and GatewayClasses](https://cloud.google.com/kubernetes-engine/docs/how-to/enabling-multi-cluster-gateways)
+- [GKE Gateway API](https://cloud.google.com/kubernetes-engine/docs/concepts/gateway-api)
+- [Google Cloud Armor integration](https://cloud.google.com/armor/docs/integrating-cloud-armor)
+- [AWS Load Balancer Controller for Amazon EKS](https://docs.aws.amazon.com/eks/latest/userguide/aws-load-balancer-controller.html)
+- [AWS Global Accelerator standard accelerators](https://docs.aws.amazon.com/global-accelerator/latest/dg/about-accelerators.html)
+- [Amazon Route 53 routing policies](https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/routing-policy.html)
+- [Amazon VPC Lattice](https://docs.aws.amazon.com/vpc-lattice/latest/ug/what-is-vpc-lattice.html)
+- [AWS WAF protected resources](https://docs.aws.amazon.com/waf/latest/developerguide/how-aws-waf-works-resources.html)
 - [Fleet DNS-based global load balancing](../concepts/DNSBasedGlobalLoadBalancing/README.md)
 - [PR #373: initial AFD + WAF + PLS implementation spike](https://github.com/Azure/fleet-networking/pull/373)

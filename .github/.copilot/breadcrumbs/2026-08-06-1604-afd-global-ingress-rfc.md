@@ -35,6 +35,10 @@
 - "Can you update the RFC with the above table? Origin requirement |
   Global ingress | Tier | WAF"
 - "also add a user stories section also"
+- "add the above information to the RFC anticipating fleet networking
+  questions around multi-region deployments."
+- "also add a early competitive section about GKE (gcp) and EKE (aws)"
+- "PR #373 should also have information about the comptetive landscape"
 
 ## Plan
 
@@ -152,6 +156,26 @@
     migration, brownfield readiness, and operational status.
   - Success criteria: each major product scenario is expressed as a user
     outcome with reviewable acceptance expectations.
+- [x] **Task 4.7: Expand the multi-region Fleet deployment model.**
+  - Explain the separation between Fleet placement and global-ingress traffic
+    policy for member clusters distributed across Azure regions.
+  - Cover endpoint eligibility, AFD and ATM behavior, active-active,
+    active-passive, regional evacuation, and safe cluster addition/removal.
+  - Success criteria: fleet-networking reviewers can trace the complete
+    lifecycle from application placement through global traffic readiness.
+- [x] **Task 4.8: Add an early competitive landscape.**
+  - Compare the relevant multi-cluster ingress approaches in GKE and Amazon
+    EKS using current first-party vendor documentation.
+  - Identify product lessons without claiming exact feature parity.
+  - Success criteria: reviewers understand how the proposed Fleet experience
+    relates to established GCP and AWS approaches.
+- [ ] **Task 4.9: Add competitive context to PR #373.**
+  - Add a concise version of the competitive landscape to the first-party
+    architecture proposal on the PR #373 branch.
+  - Clearly state that the cross-team RFC remains the governing architecture
+    and that PR #373 is implementation evidence.
+  - Success criteria: reviewers of either PR see the relevant GKE and Amazon
+    EKS context without interpreting the implementation PR as final design.
 
 ### Checklist
 
@@ -239,6 +263,13 @@
 - Added twelve architecture-level user stories with acceptance outcomes for
   application owners, platform operators, security owners, brownfield cluster
   operators, and support engineers.
+- Added an early competitive landscape comparing the proposed AKS Fleet
+  experience with GKE fleets and multi-cluster Gateway/Ingress, and with the
+  assembled Amazon EKS, ALB, Route 53, Global Accelerator, and VPC Lattice
+  model.
+- Expanded the multi-region section to separate Fleet placement from global
+  traffic policy, define endpoint eligibility, compare AFD and ATM behavior,
+  and specify traffic-safe member-cluster addition and removal ordering.
 
 ## Before/After Comparison
 
@@ -270,3 +301,7 @@
   selection, health probes, Private Link, WAF, domains, and service limits.
 - Current Microsoft documentation for AKS internal load balancers and PLS.
 - Upstream MCS API, KEP-1645, and Gateway API documentation.
+- Official GKE Multi Cluster Ingress, multi-cluster Gateway, Gateway API, and
+  Cloud Armor documentation.
+- Official Amazon EKS Load Balancer Controller, Global Accelerator, Route 53,
+  VPC Lattice, and AWS WAF documentation.
