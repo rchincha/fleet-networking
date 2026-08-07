@@ -15,8 +15,9 @@
 - Keep the first implementation milestone focused on first-party PLS while
   ensuring the architecture does not preclude the broader product.
 - Create the RFC at `docs/design/afd-global-ingress-rfc.md`.
-- Make the RFC supersede
-  `docs/first-party/001-afd-global-load-balancing.md`.
+- Document the relationship between this product/architecture artifact and
+  the implementation work in PR #373 without claiming one supersedes the
+  other.
 
 ## Additional comments from user
 
@@ -41,6 +42,9 @@
 - "PR #373 should also have information about the comptetive landscape"
 - "remove this line \"Supersedes The AFD architecture draft in PR #373,
   especially docs/first-party/001-afd-global-load-balancing.md\""
+- "update the doc accordingly and title."
+- "are there other \"PRD and Architecture RFC\" in Microsoft as a common or
+  uncommon practice?"
 
 ## Plan
 
@@ -127,11 +131,11 @@
   - Clearly label the first-party PLS milestone as Phase 1 of a broader design.
   - Success criteria: the document is useful as the primary artifact for Fleet
     Manager, fleet-networking, and AKS design review.
-- [x] **Task 4.2: Mark the relationship to the prior proposals.**
-  - State that the new RFC supersedes Proposal 001 for architecture direction.
-  - Treat Proposal 002 and the POC as implementation evidence, not approved
-    product design.
-  - Success criteria: reviewers know which document governs future decisions.
+- [x] **Task 4.2: Clarify the relationship to the prior proposals.**
+  - Treat PR #373 and its proposals as implementation evidence while this
+    document captures the broader product and architecture discussion.
+  - Do not claim that either artifact supersedes the other.
+  - Success criteria: reviewers understand the role of each artifact.
 - [x] **Task 4.3: Review the Markdown and update this breadcrumb.**
   - Check local links, headings, tables, terminology, and completeness against
     every plan task.
@@ -182,6 +186,13 @@
   - Remove the metadata statement that the RFC supersedes the architecture
     draft in PR #373.
   - Success criteria: the RFC does not claim replacement of PR #373.
+- [x] **Task 4.11: Reframe the artifact as a PRD and architecture RFC.**
+  - Retitle the document and metadata.
+  - Convert the opening summary into an executive summary and add an explicit
+    problem statement before the decision request.
+  - Success criteria: executive stakeholders can understand the problem,
+    proposal, scope, initial milestone, and required decisions from the
+    opening sections.
 
 ### Checklist
 
@@ -216,9 +227,10 @@
 
 ## Decisions
 
-- Create a new cross-team RFC rather than rewriting the first-party proposal in
-  place.
-- The RFC will supersede Proposal 001 for architecture direction.
+- Create a new cross-team PRD and architecture RFC rather than rewriting the
+  first-party proposal in place.
+- Keep the PRD/architecture RFC and PR #373 complementary; neither artifact
+  supersedes the other.
 - Place the RFC under `docs/design/` because its audience and scope extend
   beyond first-party workloads.
 - Treat first-party PLS as the initial delivery milestone, not the product
@@ -231,7 +243,7 @@
 
 ## Implementation Details
 
-- Added a standalone cross-team RFC at
+- Added a standalone cross-team PRD and architecture RFC at
   `docs/design/afd-global-ingress-rfc.md`.
 - Compared the current Fleet ATM contract with AFD's L7 proxy model and
   retained ATM for non-HTTP and direct-DNS scenarios.
@@ -280,6 +292,11 @@
   draft in PR #373.
 - Updated PR #373's first-party proposal with the evidence-based GKE and
   Amazon EKS competitive landscape in commit `b69a33d`.
+- Retitled the document to
+  `PRD and Architecture RFC: Global Ingress for AKS Fleet`.
+- Reworked the opening as an executive summary and added a dedicated problem
+  statement covering the current state, customer/platform pain points, and
+  consequences of leaving the problem unresolved.
 
 ## Before/After Comparison
 

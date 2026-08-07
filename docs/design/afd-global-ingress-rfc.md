@@ -1,12 +1,13 @@
-# RFC: Azure Front Door Global Ingress for AKS Fleet
+# PRD and Architecture RFC: Global Ingress for AKS Fleet
 
 | Field | Value |
 |---|---|
+| Document type | Product Requirements Document and Architecture RFC |
 | Status | Discussion draft |
 | Authors | Fleet Manager, fleet-networking, and AKS representatives |
 | Created | 2026-08-06 |
 | Reviewers | Fleet Manager networking, fleet-networking, AKS networking, Azure Front Door, security |
-| Target | Cross-team architecture agreement before implementation |
+| Target | Cross-team product and architecture agreement before implementation |
 | Publication | Markdown source, with Mermaid diagrams rendered before Microsoft Word export |
 
 > **Document export note:** Mermaid is the source format for diagrams in
@@ -15,39 +16,108 @@
 > not preserve SVG reliably. The exported document must contain the
 > rendered graphics, not Mermaid source text.
 
-## 1. Summary
+## 1. Executive summary
 
-This RFC proposes **Azure Front Door (AFD) Standard/Premium with
-Azure Web Application Firewall (WAF)** as the strategic global
-Layer-7 ingress option for applications deployed across clusters in an
-AKS Fleet.
+AKS Fleet does not currently provide one managed product experience
+for placing an application across member clusters and exposing it
+through the appropriate global ingress service. Fleet's existing
+Azure Traffic Manager (ATM) integration provides DNS-based routing to
+public endpoints, but it does not provide an HTTP(S) proxy, WAF, edge
+TLS termination, host/path routing, or private origin connectivity.
+Customers that need these capabilities must assemble and operate Azure
+Front Door (AFD), WAF, DNS, certificates, and cluster endpoints
+outside the Fleet API.
 
-The target is broader than the initial first-party scenario. It must
-serve:
+This document proposes a Fleet-managed global ingress product for
+applications deployed across clusters and Azure regions. It uses
+provider and connectivity requirements to select the supported data
+plane:
 
-1. external customers that need managed multi-cluster HTTP(S) ingress,
-2. first-party customers that require WAF and private connectivity to
-   origins, and
-3. customers migrating from Fleet's existing Azure Traffic Manager
-   (ATM) integration or from independently managed AFD resources.
+| Application requirement | Global ingress direction |
+|---|---|
+| Public HTTP(S) origins | AFD Standard or Premium |
+| Private HTTP(S) origins | AFD Premium + Private Link to PLS |
+| Public DNS or non-HTTP endpoints | ATM |
+| Private non-HTTP endpoints | Not covered by the current AFD or ATM integrations |
 
-AFD is intended to be a **full alternative to ATM for HTTP(S) global
-ingress scenarios**. It is not a universal replacement for ATM. ATM is
-DNS-based and can direct clients to endpoints serving protocols that
-AFD cannot proxy. AFD is an HTTP(S) reverse proxy and therefore does
-not replace ATM for arbitrary TCP/UDP or non-HTTP workloads.
+WAF is an optional AFD capability unless a customer or compliance
+policy requires it. A first-party compliance class can require AFD
+Premium, private origins, an approved WAF policy, and Prevention mode
+without imposing those requirements on every external customer.
 
-The first implementation milestone can remain the original
-first-party use case:
+Fleet Manager remains responsible for application placement across
+member clusters. The global ingress integration independently
+determines which ready cluster endpoints may receive client traffic.
+This separation supports active-active and active-passive regions,
+regional evacuation, progressive migration, and traffic-safe cluster
+addition or removal.
+
+The initial implementation milestone remains:
 
 > AFD Premium + WAF + Private Link to a Private Link Service (PLS)
-> backed by an AKS internal load balancer.
+> backed by AKS internal load balancers in multiple member clusters.
 
-However, the APIs, ownership model, controller boundaries, networking
-contract, and rollout plan must be reviewed as parts of the broader
-product before that milestone is implemented.
+PR #373 provides useful implementation foundations for that milestone,
+including AFD SDK clients, profile, WAF, domain, origin-group,
+controller, chart, and test scaffolding. This document defines the
+broader product requirements and architecture decisions needed for
+external and first-party customers. It does not request approval of
+the PR #373 CRDs as the final product API.
 
-## 2. Decision requested
+## 2. Problem statement
+
+### 2.1 Current state
+
+Fleet customers can place applications across member clusters, but
+application placement and global north-south traffic management are
+separate operational workflows:
+
+- ATM supports DNS-based global routing to public endpoints.
+- Fleet has no managed AFD integration for public or private HTTP(S)
+  origins.
+- WAF, custom domains, certificates, routes, and AFD health policy are
+  managed through separate Azure or infrastructure-as-code workflows.
+- Private-origin customers must independently coordinate AFD Premium,
+  private endpoints, PLS, AKS internal load balancers, subnet
+  capacity, identity, and approval.
+- Multi-region placement success does not indicate whether a regional
+  endpoint is globally reachable, healthy, secure, or capacity-ready.
+
+### 2.2 Customer and platform pain points
+
+External customers lack a Fleet-native global HTTP(S) ingress
+experience comparable to managed multi-cluster ingress products in
+other clouds. First-party customers face additional compliance and
+network-isolation requirements that cannot be satisfied by the
+current public ATM path.
+
+Application and platform teams must currently:
+
+- build custom automation that discovers endpoints as clusters join,
+  leave, migrate, or fail;
+- reconcile overlapping Kubernetes, Azure, DNS, certificate, WAF, and
+  network lifecycles;
+- reason about AFD and ATM routing semantics without a common Fleet
+  policy or status model;
+- prevent public origins from bypassing WAF;
+- coordinate private endpoint approval and trusted origin TLS; and
+- diagnose failures across several teams without correlated status.
+
+### 2.3 Consequences of not addressing the problem
+
+Without a managed product:
+
+- customers continue building incompatible one-off integrations;
+- first-party onboarding remains slow and difficult to audit;
+- migration and regional evacuation remain operationally risky;
+- Fleet placement cannot provide an end-to-end application readiness
+  signal;
+- ownership gaps increase incident duration and orphaned-resource
+  risk; and
+- Fleet remains less integrated than GKE's fleet-aware
+  multi-cluster ingress model.
+
+## 3. Decision requested
 
 Fleet Manager, fleet-networking, and AKS should jointly agree on:
 
@@ -69,7 +139,7 @@ This RFC does not request approval of the CRDs or controller code from
 PR #373. That work is useful implementation evidence, but the product
 architecture must be agreed first.
 
-## 3. Terminology
+## 4. Terminology
 
 | Term | Meaning in this RFC |
 |---|---|
@@ -87,9 +157,9 @@ architecture must be agreed first.
 | Ingress gateway | A per-cluster L7 proxy or Gateway API implementation that routes to multiple local Services. |
 | Direct Service origin | An AFD origin that targets a load balancer dedicated to one Kubernetes Service. |
 
-## 4. Context and current state
+## 5. Context and current state
 
-### 4.1 Fleet's existing ATM contract
+### 5.1 Fleet's existing ATM contract
 
 Fleet currently exposes DNS-based global load balancing through:
 
@@ -124,7 +194,7 @@ The ATM path has important properties:
 - ATM can support application protocols beyond HTTP(S), because it is
   not in the application data path.
 
-### 4.2 Why AFD is a separate product surface
+### 5.2 Why AFD is a separate product surface
 
 AFD changes the data path and responsibility model:
 
@@ -185,7 +255,7 @@ It also introduces new dependencies and failure modes:
 - proxy connection limits and timeouts, and
 - data-plane behavior when every origin is unhealthy.
 
-### 4.3 Competitive landscape
+### 5.3 Competitive landscape
 
 This section compares product and control-plane patterns, not exact
 feature parity. Each provider has different network boundaries,
@@ -263,9 +333,9 @@ The competitive comparison supports:
    documenting how to assemble Azure services; and
 6. retaining ATM alongside AFD for DNS and non-HTTP requirements.
 
-## 5. Goals
+## 6. Goals
 
-### 5.1 Product goals
+### 6.1 Product goals
 
 The design should:
 
@@ -287,7 +357,7 @@ The design should:
 11. define clear support boundaries among Fleet Manager,
     fleet-networking, AKS, and Azure Front Door.
 
-### 5.2 Initial milestone goal
+### 6.2 Initial milestone goal
 
 The first milestone should prove one production-shaped vertical slice:
 
@@ -306,7 +376,7 @@ The first milestone should prove one production-shaped vertical slice:
 The milestone should be deliberately small in API breadth, but it must
 use the agreed ownership and lifecycle model.
 
-## 6. Non-goals
+## 7. Non-goals
 
 This RFC does not propose:
 
@@ -322,9 +392,9 @@ This RFC does not propose:
   migration; or
 - committing to the CRD shapes prototyped in PR #373.
 
-## 7. Customer personas and scenarios
+## 8. Customer personas and scenarios
 
-### 7.1 External customer: managed public multi-cluster ingress
+### 8.1 External customer: managed public multi-cluster ingress
 
 The customer runs an HTTP(S) application in several AKS clusters. They
 want Fleet to:
@@ -341,14 +411,14 @@ The origins can be public if the customer accepts and secures that
 model. AFD Standard or Premium eligibility depends on the required WAF
 and networking capabilities.
 
-### 7.2 External customer: private origins
+### 8.2 External customer: private origins
 
 The customer wants the public edge to be AFD but does not want public
 load balancers on clusters. The customer uses AFD Premium with private
 origins and accepts the PLS, private endpoint, subnet, approval, cost,
 and regional requirements.
 
-### 7.3 First-party customer: compliant private ingress
+### 8.3 First-party customer: compliant private ingress
 
 The customer requires:
 
@@ -363,7 +433,7 @@ This is the initial delivery scenario. It requires explicit security
 and compliance approval that a public AFD edge with no public origin
 endpoint satisfies the workload boundary.
 
-### 7.4 Multi-region active-active
+### 8.4 Multi-region active-active
 
 The application runs in two or more Azure regions. Healthy origins in
 several regions serve traffic concurrently. AFD selects origins using
@@ -376,7 +446,7 @@ The design must explain whether weights express:
 - deployment rollout intent, or
 - some combination of these.
 
-### 7.5 Multi-region active-passive
+### 8.5 Multi-region active-passive
 
 One region is primary and another is standby. AFD priorities select
 the active region while probes determine failover.
@@ -385,7 +455,7 @@ The standby must still be capacity-ready, certificate-compatible, and
 network-reachable. The RFC does not treat a successfully reconciled
 origin as proof that the standby application has sufficient capacity.
 
-### 7.6 Cluster migration and progressive delivery
+### 8.6 Cluster migration and progressive delivery
 
 Customers must be able to:
 
@@ -395,7 +465,7 @@ Customers must be able to:
 - drain and remove the old cluster, and
 - reverse the migration if health or application signals regress.
 
-### 7.7 Regional evacuation
+### 8.7 Regional evacuation
 
 An operator or automated system must be able to remove a region from
 traffic without deleting its application. The desired API should
@@ -407,7 +477,7 @@ separate:
 - application not ready, and
 - Azure resource not programmed.
 
-### 7.8 User stories
+### 8.8 User stories
 
 The following user stories describe the intended product outcomes.
 They are architecture-level acceptance statements, not final API or
@@ -428,9 +498,9 @@ end-to-end test specifications.
 | US-11 | As a brownfield cluster operator, I want a readiness assessment before enabling private AFD origins, so that unsupported load balancer, PLS, subnet, identity, DNS, and certificate configurations are found before deployment. | The assessment reports blocking and non-blocking findings without silently mutating Day-0 networking choices. |
 | US-12 | As a support engineer, I want correlated Kubernetes and Azure status for profiles, domains, routes, origins, WAF, and Private Link, so that I can identify which layer prevents traffic from being ready. | Status, events, metrics, and logs expose stable object and Azure resource identifiers with actionable condition reasons. |
 
-## 8. Capability boundary: AFD versus ATM
+## 9. Capability boundary: AFD versus ATM
 
-### 8.1 Origin-connectivity decision matrix
+### 9.1 Origin-connectivity decision matrix
 
 The product choice should be based on **origin connectivity and
 application protocol**, not on whether the AKS API server is configured
@@ -456,7 +526,7 @@ Additional constraints:
 - ATM remains appropriate when clients must connect directly or the
   application protocol is not HTTP(S).
 
-### 8.2 Detailed capability comparison
+### 9.2 Detailed capability comparison
 
 | Capability | ATM integration | Proposed AFD integration |
 |---|---|---|
@@ -480,9 +550,9 @@ Additional constraints:
 AFD should be described as the preferred **Fleet L7 global ingress**
 option, while ATM remains the Fleet DNS global load-balancing option.
 
-## 9. Proposed architecture
+## 10. Proposed architecture
 
-### 9.1 Resource hierarchy
+### 10.1 Resource hierarchy
 
 A complete AFD configuration contains several distinct lifecycles:
 
@@ -514,7 +584,7 @@ The design must not collapse these into one opaque readiness bit.
 Domains, certificates, routes, origins, WAF, and private endpoints can
 be independently pending or failed.
 
-### 9.2 Control-plane components
+### 10.2 Control-plane components
 
 The proposed logical components are:
 
@@ -572,7 +642,7 @@ flowchart TB
     HubController -. product status .-> FleetAPI
 ```
 
-### 9.3 Data plane
+### 10.3 Data plane
 
 ```mermaid
 flowchart LR
@@ -604,7 +674,7 @@ flowchart LR
 AFD Private Link secures the AFD-to-origin leg. It does not provide a
 private client-to-AFD endpoint.
 
-### 9.4 Resource placement and subscription model
+### 10.4 Resource placement and subscription model
 
 The AFD profile, WAF policy, managed private endpoints, DNS
 integration, and diagnostic settings must have an explicit
@@ -620,7 +690,7 @@ This is a Phase 0 decision. The Phase 1 milestone cannot finalize
 identity, quota, billing, deletion, or private-endpoint approval
 behavior until the owning subscription and tenant are agreed.
 
-## 10. Origin model
+## 11. Origin model
 
 The origin model is the most important open architecture decision.
 
@@ -640,7 +710,7 @@ flowchart TB
     GatewayPrivate -. later provider .-> ExpandedProduct
 ```
 
-### 10.1 Option A: direct per-Service origin
+### 11.1 Option A: direct per-Service origin
 
 Each exported application Service has its own load balancer endpoint.
 For private mode, it has its own internal load balancer and PLS.
@@ -662,7 +732,7 @@ Costs and risks:
 - application must correctly handle AFD host headers and TLS, and
 - limited opportunity to consolidate routes and certificates.
 
-### 10.2 Option B: shared per-cluster ingress gateway
+### 11.2 Option B: shared per-cluster ingress gateway
 
 AFD origins point to one or more ingress gateways in each cluster.
 Gateway API routes send traffic from the local gateway to Services.
@@ -683,7 +753,7 @@ Costs and risks:
 - route consistency and status aggregation across clusters,
 - gateway capacity and noisy-neighbor concerns.
 
-### 10.3 Option C: hybrid origin attachments
+### 11.3 Option C: hybrid origin attachments
 
 The product API represents an **origin attachment** independent of its
 implementation. Supported providers can include:
@@ -701,9 +771,9 @@ traffic policy API.
 architecture and direct PLS as the first provider. Do not encode
 Service-specific assumptions into the top-level global ingress API.
 
-## 11. API direction
+## 12. API direction
 
-### 11.1 Principles
+### 12.1 Principles
 
 The API should:
 
@@ -719,7 +789,7 @@ The API should:
 - allow capability discovery for Standard, Premium, public, and
   private origin modes.
 
-### 11.2 Candidate model
+### 12.2 Candidate model
 
 The preferred direction to evaluate is:
 
@@ -801,7 +871,7 @@ Questions that must be resolved before API approval:
 - Which fields are portable Gateway API fields and which require an
   Azure-specific policy?
 
-### 11.3 Alternative: Fleet-specific AFD CRDs
+### 12.3 Alternative: Fleet-specific AFD CRDs
 
 Dedicated `FrontDoorProfile`, `FrontDoorRoute`, and
 `FrontDoorBackend` CRDs can closely mirror ARM resources and the
@@ -820,9 +890,9 @@ The CRDs from PR #373 should be treated as a spike for Azure SDK,
 status, fake-provider, and reconciliation feasibility, not as the
 default API decision.
 
-## 12. Multi-cluster and multi-region traffic model
+## 13. Multi-cluster and multi-region traffic model
 
-### 12.1 Separate placement from global ingress
+### 13.1 Separate placement from global ingress
 
 Fleet Manager determines **where the application runs**. AFD or ATM
 determines **which eligible member-cluster endpoint receives client
@@ -862,7 +932,7 @@ This separation allows:
 - application rollout and traffic rollout to have independent status
   and rollback.
 
-### 12.2 Member endpoint eligibility
+### 13.2 Member endpoint eligibility
 
 A member cluster becomes eligible for global traffic only after all
 required layers are ready:
@@ -891,7 +961,7 @@ Status should expose each stage separately. A placed application can
 be unavailable, and an AFD or ATM endpoint can remain healthy while
 the surviving region lacks enough application capacity.
 
-### 12.3 Multi-region interaction with AFD and ATM
+### 13.3 Multi-region interaction with AFD and ATM
 
 | Deployment requirement | AFD behavior | Current Fleet ATM behavior |
 |---|---|---|
@@ -908,7 +978,7 @@ application endpoint. They should not be chained together. They can
 coexist temporarily during migration, or serve separate HTTP(S) and
 non-HTTP endpoints for the same application.
 
-### 12.4 Member-cluster lifecycle
+### 13.4 Member-cluster lifecycle
 
 A cluster must be added in readiness order and removed in the reverse
 traffic-safe order:
@@ -954,7 +1024,7 @@ continue serving their last known configuration. No new cluster,
 weight, route, or evacuation changes take effect until reconciliation
 resumes.
 
-### 12.5 Origin identity
+### 13.5 Origin identity
 
 Every origin should have a stable identity derived from:
 
@@ -970,7 +1040,7 @@ The controller must not infer ownership from an ambiguous name prefix
 alone. Azure tags and Kubernetes owner status should record the
 mapping needed for cleanup and drift detection.
 
-### 12.6 Priority and weight
+### 13.6 Priority and weight
 
 AFD origin selection is ordered:
 
@@ -988,7 +1058,7 @@ The API must therefore avoid promising exact global percentages.
 Status and documentation should describe weights as relative intent
 within AFD's selection algorithm.
 
-### 12.7 Recommended AFD patterns
+### 13.7 Recommended AFD patterns
 
 | Pattern | Priority | Weight | Use |
 |---|---|---|---|
@@ -998,7 +1068,7 @@ within AFD's selection algorithm.
 | Progressive delivery | Same | Gradually adjusted | Version or cluster migration |
 | Administrative evacuation | Disable origin or set approved policy state | Not relied upon | Planned removal of a cluster or region |
 
-### 12.8 Private Link regional redundancy
+### 13.8 Private Link regional redundancy
 
 For private origins, the **AFD Private Link region** is a separate
 choice from the AKS origin region. Microsoft recommends selecting a
@@ -1016,9 +1086,9 @@ decide whether it validates:
 - origin-region redundancy, or
 - both origin and AFD Private Link regional redundancy.
 
-## 13. Health and readiness
+## 14. Health and readiness
 
-### 13.1 AFD health semantics
+### 14.1 AFD health semantics
 
 AFD sends HTTP or HTTPS health probes from its edge environments.
 Only `200 OK` is healthy. AFD considers sample size, successful sample
@@ -1039,7 +1109,7 @@ Probe design implications:
 The product should require an explicit probe contract and document
 recommended shallow and deep health patterns.
 
-### 13.2 All origins unhealthy
+### 14.2 All origins unhealthy
 
 AFD does not fail closed when every origin in an origin group is
 unhealthy. It distributes traffic across all origins in round-robin
@@ -1055,7 +1125,7 @@ This behavior must be:
 Fleet status cannot change this platform behavior. It can only make
 the condition visible and offer administrative controls.
 
-### 13.3 Readiness layers
+### 14.3 Readiness layers
 
 The API should distinguish:
 
@@ -1084,9 +1154,9 @@ flowchart LR
     OriginHealthy --> Ready
 ```
 
-## 14. Networking implications
+## 15. Networking implications
 
-### 14.1 Public origins
+### 15.1 Public origins
 
 Public origin mode needs a defense against bypassing AFD and WAF.
 The design must choose and document supported controls, such as:
@@ -1100,7 +1170,7 @@ The design must choose and document supported controls, such as:
 The controller must not label a route secure merely because WAF is
 attached if clients can directly reach the origin.
 
-### 14.2 Private origins
+### 15.2 Private origins
 
 AFD Private Link:
 
@@ -1118,7 +1188,7 @@ and Private Link region can share one private endpoint. Changing any
 of those values or using another profile creates another endpoint and
 approval lifecycle.
 
-### 14.3 AKS internal load balancer and PLS
+### 15.3 AKS internal load balancer and PLS
 
 For the direct Service PLS provider:
 
@@ -1144,7 +1214,7 @@ Brownfield validation must detect unsupported load balancer, backend
 pool, subnet, address-capacity, and policy configurations before
 creating AFD resources.
 
-### 14.4 Source IP and proxy headers
+### 15.4 Source IP and proxy headers
 
 Applications no longer receive the client connection directly. The
 design must define:
@@ -1157,7 +1227,7 @@ design must define:
   balancer, and
 - how ingress gateways normalize forwarded headers.
 
-### 14.5 End-to-end TLS
+### 15.5 End-to-end TLS
 
 The supported TLS modes should be explicit:
 
@@ -1175,9 +1245,9 @@ The supported TLS modes should be explicit:
 - client-certificate mTLS at the AFD edge is not currently a
   generally available product dependency for this design.
 
-## 15. WAF and security ownership
+## 16. WAF and security ownership
 
-### 15.1 WAF policy modes
+### 16.1 WAF policy modes
 
 The product should support a safe lifecycle:
 
@@ -1190,7 +1260,7 @@ The product should support a safe lifecycle:
 First-party policy can require Prevention mode and approved managed
 rule sets. External customers can choose an allowed policy class.
 
-### 15.2 Ownership options
+### 16.2 Ownership options
 
 | Model | Benefit | Risk |
 |---|---|---|
@@ -1202,7 +1272,7 @@ The initial first-party milestone should prefer a platform-approved
 policy reference or class. It should not create an unconstrained WAF
 policy API before security ownership is agreed.
 
-### 15.3 Identity separation
+### 16.3 Identity separation
 
 The controller identity should use workload identity and least
 privilege. Separate responsibilities should be considered for:
@@ -1217,7 +1287,7 @@ privilege. Separate responsibilities should be considered for:
 An AFD identity should not automatically inherit ATM permissions, and
 ATM-only installations should not receive AFD write permissions.
 
-## 16. Failure modes and recovery
+## 17. Failure modes and recovery
 
 | Failure | Detection | Data-plane impact | Expected automated behavior | Operator/customer action |
 |---|---|---|---|---|
@@ -1259,9 +1329,9 @@ flowchart TD
     PrivateLinkFailure[Private Link or PLS failure] --> ProbeFailure
 ```
 
-## 17. Brownfield and greenfield adoption
+## 18. Brownfield and greenfield adoption
 
-### 17.1 Greenfield
+### 18.1 Greenfield
 
 Greenfield guidance should define:
 
@@ -1280,7 +1350,7 @@ Greenfield guidance should define:
 The platform should validate Day-0 prerequisites before advertising
 the feature as enabled for a cluster.
 
-### 17.2 Brownfield AKS clusters
+### 18.2 Brownfield AKS clusters
 
 Brownfield enablement should run a readiness assessment:
 
@@ -1300,7 +1370,7 @@ Some Day-0 networking limitations can require cluster or subnet
 replacement. The product must report this clearly rather than
 attempting risky automatic mutation.
 
-### 17.3 Migration from ATM
+### 18.3 Migration from ATM
 
 ATM-to-AFD migration is a data-path change, not a controller flag
 flip. A safe migration is:
@@ -1335,7 +1405,7 @@ cannot simultaneously satisfy the existing ATM requirement for a
 public endpoint and the AFD private-origin requirement. A parallel
 Service or ingress gateway is the safer brownfield pattern.
 
-### 17.4 Migration from customer-managed AFD
+### 18.4 Migration from customer-managed AFD
 
 The first release should not silently adopt an existing profile.
 Supported choices should be:
@@ -1346,7 +1416,7 @@ Supported choices should be:
 - introduce a future import/adoption workflow with a dry-run,
   ownership inventory, and field-level conflict policy.
 
-## 18. Coexistence and conflict policy
+## 19. Coexistence and conflict policy
 
 ATM and AFD can coexist:
 
@@ -1370,7 +1440,7 @@ Recommended conflict rules:
 - Deleting a Fleet object cannot delete a customer-owned shared
   profile without an explicit ownership contract.
 
-## 19. Lifecycle and drift
+## 20. Lifecycle and drift
 
 Every Azure resource should be classified as:
 
@@ -1392,9 +1462,9 @@ The controller should:
   authorization failures, and
 - define orphan detection and recovery procedures.
 
-## 20. Observability and operations
+## 21. Observability and operations
 
-### 20.1 Kubernetes status and events
+### 21.1 Kubernetes status and events
 
 Status should include:
 
@@ -1412,7 +1482,7 @@ Status should include:
 Events should identify user-actionable transitions without producing
 an event storm on every retry.
 
-### 20.2 Metrics
+### 21.2 Metrics
 
 At minimum:
 
@@ -1425,7 +1495,7 @@ At minimum:
 - WAF policy compliance state, and
 - time from Service export to ready global route.
 
-### 20.3 Logs and diagnostics
+### 21.3 Logs and diagnostics
 
 The support model must correlate:
 
@@ -1441,7 +1511,7 @@ AFD access, health probe, and WAF logs should integrate with Azure
 Monitor. Documentation must explain which logs are customer-owned and
 which are platform-owned.
 
-### 20.4 Proposed service objectives
+### 21.4 Proposed service objectives
 
 Values require product review, but the RFC should establish metrics
 for:
@@ -1455,7 +1525,7 @@ for:
 - private endpoint approval-to-ready time, and
 - data-plane availability under the documented redundancy model.
 
-## 21. Scale, quotas, and cost
+## 22. Scale, quotas, and cost
 
 The design must account for:
 
@@ -1495,7 +1565,7 @@ Shared profiles can improve resource efficiency but complicate
 tenancy, blast radius, quotas, and billing. This tradeoff must be a
 product decision.
 
-## 22. Team responsibilities
+## 23. Team responsibilities
 
 The following is a proposed starting point for discussion.
 
@@ -1516,7 +1586,7 @@ The following is a proposed starting point for discussion.
 The final RACI must name real owning teams and escalation paths before
 preview.
 
-## 23. Phased delivery
+## 24. Phased delivery
 
 ### Phase 0: cross-team design and spikes
 
@@ -1577,9 +1647,9 @@ multi-cluster ingress and documented failure behavior.
 
 The order of Phases 3 and 4 can change after API and product review.
 
-## 24. Alternatives considered
+## 25. Alternatives considered
 
-### 24.1 Keep ATM and require customers to manage AFD separately
+### 25.1 Keep ATM and require customers to manage AFD separately
 
 Benefits:
 
@@ -1594,7 +1664,7 @@ Rejected as the strategic direction because:
 - Kubernetes status cannot represent global ingress readiness, and
 - Fleet cannot offer a coherent multi-cluster ingress product.
 
-### 24.2 Extend the existing ATM CRDs with an AFD mode
+### 25.2 Extend the existing ATM CRDs with an AFD mode
 
 Benefits:
 
@@ -1605,7 +1675,7 @@ Rejected because ATM and AFD have different data paths, capabilities,
 resource hierarchies, health semantics, and security boundaries.
 A mode field would create a union API with many invalid combinations.
 
-### 24.3 Mirror every AFD ARM resource as a CRD
+### 25.3 Mirror every AFD ARM resource as a CRD
 
 Benefits:
 
@@ -1616,7 +1686,7 @@ Not recommended as the primary customer API because it couples users
 to ARM details and duplicates Gateway API concepts. Lower-level CRDs
 could still be implementation or platform APIs.
 
-### 24.4 First-party-only PLS feature
+### 25.4 First-party-only PLS feature
 
 Benefits:
 
@@ -1627,7 +1697,7 @@ Rejected as the product boundary because external customers need the
 same multi-cluster L7 capabilities, and a first-party-only API risks
 locking the implementation to one origin and policy model.
 
-## 25. Risks
+## 26. Risks
 
 | Risk | Impact | Mitigation |
 |---|---|---|
@@ -1648,7 +1718,7 @@ locking the implementation to one origin and policy model.
 | Controller deletion or authorization failure orphans Azure resources | Cost and security drift | Ownership tags, orphan inventory, bounded finalizer policy, repair tooling |
 | AFD or ARM quotas are reached at Fleet scale | New routes/origins fail | Capacity model, quota preflight, profile sharding strategy |
 
-## 26. Open questions
+## 27. Open questions
 
 ### Product
 
@@ -1708,7 +1778,7 @@ locking the implementation to one origin and policy model.
 27. Will Fleet provide automated readiness and migration tooling?
 28. Is adoption of existing customer-managed AFD ever supported?
 
-## 27. Review checklist
+## 28. Review checklist
 
 ### Fleet Manager
 
@@ -1738,7 +1808,7 @@ locking the implementation to one origin and policy model.
 - [ ] WAF lifecycle and policy ownership are acceptable.
 - [ ] Failure and all-origins-unhealthy behavior are understood.
 
-## 28. References
+## 29. References
 
 - [Azure Front Door routing architecture](https://learn.microsoft.com/azure/frontdoor/front-door-routing-architecture)
 - [Azure Front Door origins and origin groups](https://learn.microsoft.com/azure/frontdoor/origin)
