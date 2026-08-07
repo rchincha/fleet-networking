@@ -34,6 +34,7 @@
 - "this doc will be exported as a word doc eventually to share"
 - "Can you update the RFC with the above table? Origin requirement |
   Global ingress | Tier | WAF"
+- "also add a user stories section also"
 
 ## Plan
 
@@ -144,6 +145,13 @@
     control-plane configuration.
   - Success criteria: reviewers can select the appropriate global ingress
     option without conflating cluster privacy with origin reachability.
+- [x] **Task 4.6: Add cross-persona user stories.**
+  - Cover external and first-party application owners, platform operators,
+    security teams, and support engineers.
+  - Include public AFD, private AFD + PLS, ATM, multi-region failover,
+    migration, brownfield readiness, and operational status.
+  - Success criteria: each major product scenario is expressed as a user
+    outcome with reviewable acceptance expectations.
 
 ### Checklist
 
@@ -228,6 +236,9 @@
   HTTP(S), public HTTP(S), public non-HTTP, and private non-HTTP scenarios.
 - Clarified that AKS private-cluster control-plane configuration does not
   determine whether the application origin is public or private.
+- Added twelve architecture-level user stories with acceptance outcomes for
+  application owners, platform operators, security owners, brownfield cluster
+  operators, and support engineers.
 
 ## Before/After Comparison
 

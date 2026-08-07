@@ -330,6 +330,27 @@ separate:
 - application not ready, and
 - Azure resource not programmed.
 
+### 7.8 User stories
+
+The following user stories describe the intended product outcomes.
+They are architecture-level acceptance statements, not final API or
+end-to-end test specifications.
+
+| ID | User story | Acceptance outcome |
+|---|---|---|
+| US-01 | As an external application owner, I want to expose an HTTP(S) application across multiple public member-cluster origins through AFD, so that I receive one global endpoint without operating AFD resources directly. | The application can select AFD Standard or Premium, configure domains and routes, and receive traffic only through healthy eligible origins. |
+| US-02 | As an external application owner, I want WAF to be optional for my public AFD application, so that I can adopt global ingress independently and enable the security capabilities my policy requires. | The application can run without an attached WAF policy or reference an allowed WAF policy; status reports the effective WAF attachment and mode. |
+| US-03 | As a first-party application owner, I want AFD Premium to reach only private AKS origins through PLS, so that my clusters do not require public workload endpoints. | Every origin uses Private Link, public and private origins are not mixed, and readiness includes PLS discovery and private-endpoint approval. |
+| US-04 | As a first-party security owner, I want a policy class to require AFD Premium, private origins, approved WAF managed rules, and Prevention mode, so that compliant applications cannot weaken required controls. | Admission or policy enforcement rejects incompatible tier, connectivity, WAF, or mode selections and reports an actionable reason. |
+| US-05 | As an application owner serving a public non-HTTP protocol, I want to continue using ATM, so that clients connect directly through DNS-based global load balancing. | The product selects the ATM path and does not present AFD or WAF as compatible with the workload protocol. |
+| US-06 | As a platform operator, I want origin connectivity to be selected independently from AKS private-cluster control-plane configuration, so that public and private workload endpoints are modeled accurately. | Eligibility is based on the actual Service or ingress-gateway endpoint and not inferred from API-server reachability. |
+| US-07 | As an application owner, I want healthy clusters in multiple regions to serve traffic concurrently or in priority order, so that I can choose active-active or active-passive deployment. | Priority, latency sensitivity, weight, health, and regional placement are represented and their effective AFD semantics are visible. |
+| US-08 | As an operator, I want to evacuate a cluster or region without deleting the application, so that planned maintenance and incident response do not require topology destruction. | Origins can be administratively disabled or drained separately from probe health, membership, and application readiness. |
+| US-09 | As an ATM customer, I want to create and validate an AFD path before changing production DNS, so that I can migrate with a bake period and a tested rollback. | ATM and AFD can coexist during migration, DNS cutover is explicit, and the old path remains available until exit criteria are met. |
+| US-10 | As a security owner, I want public AFD origins protected from direct client access, so that traffic cannot bypass WAF and edge policy. | The selected public-origin provider enforces or validates the supported origin-lockdown controls and reports noncompliant exposure. |
+| US-11 | As a brownfield cluster operator, I want a readiness assessment before enabling private AFD origins, so that unsupported load balancer, PLS, subnet, identity, DNS, and certificate configurations are found before deployment. | The assessment reports blocking and non-blocking findings without silently mutating Day-0 networking choices. |
+| US-12 | As a support engineer, I want correlated Kubernetes and Azure status for profiles, domains, routes, origins, WAF, and Private Link, so that I can identify which layer prevents traffic from being ready. | Status, events, metrics, and logs expose stable object and Azure resource identifiers with actionable condition reasons. |
+
 ## 8. Capability boundary: AFD versus ATM
 
 ### 8.1 Origin-connectivity decision matrix
