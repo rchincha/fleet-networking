@@ -32,6 +32,8 @@
 - User selected: place it at `docs/design/afd-global-ingress-rfc.md`.
 - "use mermaid diagrams for graphics"
 - "this doc will be exported as a word doc eventually to share"
+- "Can you update the RFC with the above table? Origin requirement |
+  Global ingress | Tier | WAF"
 
 ## Plan
 
@@ -135,6 +137,13 @@
     before conversion to Microsoft Word.
   - Success criteria: all conceptual graphics use Mermaid and the RFC records
     the Word-export rendering requirement.
+- [x] **Task 4.5: Add the origin-connectivity decision matrix.**
+  - Compare private HTTP(S), public HTTP(S), public non-HTTP, and private
+    non-HTTP origin requirements across AFD, ATM, tier, and WAF support.
+  - Clarify that origin connectivity is independent of AKS private-cluster
+    control-plane configuration.
+  - Success criteria: reviewers can select the appropriate global ingress
+    option without conflating cluster privacy with origin reachability.
 
 ### Checklist
 
@@ -215,6 +224,10 @@
   them with Mermaid CLI.
 - Validated all RFC links with the repository Markdown link-check
   configuration.
+- Added an origin-connectivity decision matrix that distinguishes private
+  HTTP(S), public HTTP(S), public non-HTTP, and private non-HTTP scenarios.
+- Clarified that AKS private-cluster control-plane configuration does not
+  determine whether the application origin is public or private.
 
 ## Before/After Comparison
 

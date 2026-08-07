@@ -332,6 +332,34 @@ separate:
 
 ## 8. Capability boundary: AFD versus ATM
 
+### 8.1 Origin-connectivity decision matrix
+
+The product choice should be based on **origin connectivity and
+application protocol**, not on whether the AKS API server is configured
+as a private cluster. A private AKS cluster can expose a public workload
+endpoint, and a non-private AKS cluster can expose only an internal
+workload endpoint.
+
+| Origin requirement | Global ingress | Tier | WAF |
+|---|---|---|---|
+| Private HTTP(S) origin | AFD + PLS | AFD Premium required | Optional as an AFD capability; a first-party or compliance policy can require WAF in Prevention mode |
+| Public HTTP(S) origin | AFD | AFD Standard or Premium | Optional; available capabilities depend on the selected tier and policy requirements |
+| Public DNS or non-HTTP endpoint | ATM | Not applicable | Not available |
+| Private non-HTTP origin | Neither current Fleet AFD nor ATM integration | Not applicable | Not applicable |
+
+Additional constraints:
+
+- AFD Standard does not support Private Link origins.
+- Public and private origins cannot be mixed in one AFD origin group.
+- Public AFD origins require controls that prevent clients from
+  bypassing AFD and its WAF policy.
+- WAF requirements should come from a customer or compliance policy
+  class rather than being hard-coded for every AFD deployment.
+- ATM remains appropriate when clients must connect directly or the
+  application protocol is not HTTP(S).
+
+### 8.2 Detailed capability comparison
+
 | Capability | ATM integration | Proposed AFD integration |
 |---|---|---|
 | Traffic layer | DNS | HTTP(S) reverse proxy |
