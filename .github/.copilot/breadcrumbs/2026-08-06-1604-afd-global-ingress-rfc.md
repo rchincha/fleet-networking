@@ -45,6 +45,10 @@
 - "update the doc accordingly and title."
 - "are there other \"PRD and Architecture RFC\" in Microsoft as a common or
   uncommon practice?"
+- "The CRDs, k8s object examples, and explanation for the following has been
+  captured in that detail in this doc? Else include that in the Appendix and
+  add links from the main doc body: the Kubernetes API model and its
+  relationship to Gateway API and Multi-Cluster Services (MCS) API"
 
 ## Plan
 
@@ -193,6 +197,14 @@
   - Success criteria: executive stakeholders can understand the problem,
     proposal, scope, initial milestone, and required decisions from the
     opening sections.
+- [x] **Task 4.12: Add a detailed Kubernetes API appendix.**
+  - Document the candidate Gateway API, MCS, and Azure/Fleet policy object
+    model, including object placement and ownership.
+  - Add complete illustrative manifests, reconciliation mapping, status
+    expectations, and unresolved API decisions.
+  - Link the appendix from the decision request and API direction sections.
+  - Success criteria: reviewers can understand the full candidate Kubernetes
+    API without interpreting the examples as an approved schema.
 
 ### Checklist
 
@@ -297,6 +309,19 @@
 - Reworked the opening as an executive summary and added a dedicated problem
   statement covering the current state, customer/platform pain points, and
   consequences of leaving the problem unresolved.
+- Added Appendix A with the detailed candidate Kubernetes API model,
+  including Gateway API and MCS responsibilities, object placement, complete
+  private/public manifests, candidate policy CRD schemas, shared-gateway
+  variation, reconciliation mapping, status, namespace rules, ATM
+  coexistence, and unresolved decisions.
+- Linked the appendix from the executive decision request and API direction
+  sections.
+- Refined `FleetBackendPolicy` to target one Gateway and ServiceImport pair so
+  connectivity and SKU validation remain deterministic when a ServiceImport is
+  reused.
+- Added an `AzureFrontDoorCertificate` candidate CRD because AFD cannot bind a
+  Kubernetes TLS Secret directly and customer certificates require Azure Key
+  Vault.
 
 ## Before/After Comparison
 

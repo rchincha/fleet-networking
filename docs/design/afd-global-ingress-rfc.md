@@ -122,8 +122,8 @@ Without a managed product:
 Fleet Manager, fleet-networking, and AKS should jointly agree on:
 
 1. the supported customer scenarios and product boundary,
-2. the Kubernetes API model and its relationship to Gateway API and
-   Multi-Cluster Services (MCS) API,
+2. the [Kubernetes API model and its relationship to Gateway API and
+   Multi-Cluster Services (MCS) API](#appendix-a-candidate-kubernetes-api-model),
 3. the origin model: direct per-Service origins, shared per-cluster
    ingress gateways, or both,
 4. resource ownership across Kubernetes and Azure,
@@ -791,13 +791,17 @@ The API should:
 
 ### 12.2 Candidate model
 
+The complete non-normative object model, placement, manifests,
+reconciliation mapping, and status proposal are in
+[Appendix A](#appendix-a-candidate-kubernetes-api-model).
+
 The preferred direction to evaluate is:
 
 1. Gateway API expresses listeners, hostnames, routes, and backend
    references.
 2. MCS API expresses which Service is available from which clusters.
-3. A Fleet-specific attachment or policy selects clusters, regions,
-   traffic policy, AFD tier, WAF policy, and origin connectivity.
+3. Fleet/Azure policy objects select clusters, regions, traffic
+   policy, AFD tier, WAF policy, and origin connectivity.
 4. Status is projected onto standard resources where possible and
    Fleet-specific resources where Azure lifecycle has no standard
    representation.
@@ -847,10 +851,27 @@ spec:
     group: gateway.networking.k8s.io
     kind: Gateway
     name: contoso-global
-  tier: Premium
+  sku: Premium
+  waf:
+    mode: Prevention
+    policyResourceID: /subscriptions/.../frontdoorWebApplicationFirewallPolicies/contoso
+---
+apiVersion: networking.fleet.azure.com/v1alpha1
+kind: FleetBackendPolicy
+metadata:
+  name: api
+  namespace: contoso
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: contoso-global
+  backendRef:
+    group: networking.fleet.azure.com
+    kind: ServiceImport
+    name: api
+  originProvider: DirectService
   originConnectivity: PrivateLink
-  wafPolicyRef:
-    name: contoso-waf
   placement:
     strategy: ActiveActive
 ```
@@ -1834,3 +1855,761 @@ locking the implementation to one origin and policy model.
 - [AWS WAF protected resources](https://docs.aws.amazon.com/waf/latest/developerguide/how-aws-waf-works-resources.html)
 - [Fleet DNS-based global load balancing](../concepts/DNSBasedGlobalLoadBalancing/README.md)
 - [PR #373: initial AFD + WAF + PLS implementation spike](https://github.com/Azure/fleet-networking/pull/373)
+
+## Appendix A: Candidate Kubernetes API model
+
+### A.1 Status and intent
+
+This appendix is **non-normative**. It provides enough detail for API
+review, but it does not approve the CRD names, API groups, field
+names, object placement, or Gateway API integration.
+
+The candidate model separates three concerns:
+
+1. **MCS API** identifies one logical application Service implemented
+   by several Fleet member clusters.
+2. **Gateway API** describes portable HTTP(S) listeners and routes.
+3. **Fleet/Azure policy CRDs** describe Azure resource ownership,
+   AFD tier, WAF, origin connectivity, health, and multi-region
+   placement.
+
+Gateway API applies only to the candidate AFD HTTP(S) path. The current
+ATM API remains `TrafficManagerProfile` and
+`TrafficManagerBackend`; ATM is not modeled as a GatewayClass.
+
+### A.2 Current Fleet API and upstream alignment
+
+This repository currently defines:
+
+- `ServiceExport` under
+  `networking.fleet.azure.com/v1alpha1` and `v1beta1`; and
+- `ServiceImport` under
+  `networking.fleet.azure.com/v1alpha1`.
+
+The objects follow MCS concepts, but they do not use the upstream MCS
+API group. The final design must decide whether Gateway backend
+references use:
+
+- Fleet's current `networking.fleet.azure.com` objects,
+- upstream MCS API objects,
+- a compatibility layer supporting both, or
+- another stable Fleet backend attachment.
+
+The examples below use the current Fleet API group so they are
+concrete. This is not a decision against future upstream alignment.
+
+Gateway API permits implementation-specific backend kinds, but
+multi-cluster `ServiceImport` support is not universally portable
+across Gateway implementations. The Fleet AFD controller must
+explicitly advertise and test that capability if adopted.
+
+### A.3 Object placement
+
+```mermaid
+flowchart TB
+    subgraph Hub["Fleet hub or config cluster"]
+        GC[GatewayClass fleet-azure-front-door]
+        GW[Gateway contoso-global]
+        HR[HTTPRoute api]
+        AFDP[AzureFrontDoorPolicy contoso-global]
+        AFDC[AzureFrontDoorCertificate api-tls]
+        FBP[FleetBackendPolicy api]
+        SI[ServiceImport api]
+    end
+
+    subgraph East["East US member cluster"]
+        ES[Service api]
+        ESE[ServiceExport api]
+        ES --> ESE
+    end
+
+    subgraph West["West Europe member cluster"]
+        WS[Service api]
+        WSE[ServiceExport api]
+        WS --> WSE
+    end
+
+    ESE --> SI
+    WSE --> SI
+    GC --> GW
+    GW --> HR
+    HR --> SI
+    AFDP --> GW
+    AFDC --> GW
+    FBP --> GW
+    FBP --> SI
+
+    GW --> AFD[Azure Front Door]
+    HR --> AFDRoute[AFD route]
+    SI --> Origins[Origin group and member origins]
+    AFDP --> AFD
+    FBP --> Origins
+```
+
+| Object | Scope and location | Created by | Purpose |
+|---|---|---|---|
+| `GatewayClass/fleet-azure-front-door` | Cluster-scoped on the hub | Fleet platform | Registers the Fleet AFD controller |
+| `Gateway` | Application namespace on the hub | Platform or application operator | Declares the global HTTP(S) entry point and listeners |
+| `HTTPRoute` | Application namespace on the hub | Application owner | Declares host/path routing to a multi-cluster backend |
+| `AzureFrontDoorPolicy` | Application namespace on the hub | Platform or application owner, subject to policy | Declares Azure-specific profile, WAF, diagnostics, and resource-placement behavior |
+| `AzureFrontDoorCertificate` | Application namespace on the hub | Application or security owner | Declares an AFD-managed certificate or references an Azure Key Vault certificate |
+| `FleetBackendPolicy` | Application namespace on the hub | Application or platform owner | Declares origin behavior for one Gateway and ServiceImport attachment |
+| `ServiceImport` | Application namespace on the hub | Fleet MCS controller | Represents the logical Service and exporting clusters |
+| `Service` | Application namespace in each member | Application placement | Exposes the local workload or shared ingress gateway |
+| `ServiceExport` | Same namespace and name as the Service in each member | Application placement or application owner | Advertises the local Service to Fleet |
+| Local `Gateway`/`HTTPRoute` | Member cluster, only for shared-gateway mode | Fleet placement or member ingress platform | Routes from a shared cluster ingress gateway to local Services |
+
+If Fleet Manager exposes a fully managed control plane instead of a
+customer-visible hub, the customer-facing API could remain logically
+the same while Fleet materializes these objects internally. That is a
+product and ownership decision, not a data-plane requirement.
+
+### A.4 API inventory and responsibility boundaries
+
+| API | Portable or provider-specific | Responsibility |
+|---|---|---|
+| Gateway API `GatewayClass` | Portable structure, implementation-specific class | Selects the Fleet AFD controller |
+| Gateway API `Gateway` | Portable | Listener protocol, port, hostname, TLS, and route delegation |
+| Gateway API `HTTPRoute` | Portable with an implementation-specific multi-cluster backend kind | HTTP host/path/header matching and backend reference |
+| MCS `ServiceExport` | Multi-cluster service concept | Advertises a member Service |
+| MCS `ServiceImport` | Multi-cluster service concept | Represents the aggregated logical Service |
+| `AzureFrontDoorPolicy` | Azure-specific candidate CRD | AFD SKU, Azure ownership, WAF, diagnostics, and profile behavior |
+| `AzureFrontDoorCertificate` | Azure-specific candidate CRD | AFD-managed certificate intent or an Azure Key Vault certificate reference |
+| `FleetBackendPolicy` | Fleet/Azure-specific candidate CRD | Per-Gateway backend origin model, connectivity, health, cluster placement, priority, weight, and Private Link region |
+| `TrafficManagerProfile` and `TrafficManagerBackend` | Azure/Fleet-specific existing CRDs | DNS-based ATM configuration for public and non-HTTP endpoints |
+
+The model deliberately avoids using Azure policy CRDs for portable
+host/path routing. It also avoids forcing ATM into Gateway API.
+
+### A.5 End-to-end private-origin example
+
+#### A.5.1 Member-cluster Service and ServiceExport
+
+The application Service and export are applied to every selected
+member cluster. Fleet placement can distribute the manifests.
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: contoso
+  annotations:
+    service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+    service.beta.kubernetes.io/azure-pls-create: "true"
+    service.beta.kubernetes.io/azure-pls-name: contoso-api
+spec:
+  type: LoadBalancer
+  selector:
+    app: api
+  ports:
+  - name: https
+    port: 443
+    targetPort: 8443
+---
+apiVersion: networking.fleet.azure.com/v1beta1
+kind: ServiceExport
+metadata:
+  name: api
+  namespace: contoso
+```
+
+The member networking controller observes:
+
+- the Service load balancer state,
+- whether the endpoint is public or internal,
+- the PLS resource ID when Private Link is selected,
+- the source member cluster and region,
+- ports and application protocol, and
+- per-cluster weight annotations where supported.
+
+It publishes the transport data required by the hub without adding
+Azure implementation fields to the customer-authored `ServiceExport`
+spec.
+
+#### A.5.2 Generated hub ServiceImport
+
+The Fleet MCS controller creates the `ServiceImport`; users do not
+normally author it directly.
+
+```yaml
+apiVersion: networking.fleet.azure.com/v1alpha1
+kind: ServiceImport
+metadata:
+  name: api
+  namespace: contoso
+status:
+  type: ClusterSetIP
+  ports:
+  - name: https
+    protocol: TCP
+    port: 443
+    targetPort: 8443
+  clusters:
+  - cluster: eastus-prod-1
+  - cluster: westeurope-prod-1
+```
+
+The public API does not need to expose every Azure origin property on
+`ServiceImport`. Internal export objects or controller indexes can
+carry public IP, DNS, PLS, and readiness details.
+
+#### A.5.3 Platform-installed GatewayClass
+
+The Fleet platform installs one cluster-scoped class:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: fleet-azure-front-door
+spec:
+  controllerName: networking.fleet.azure.com/azure-front-door
+  description: Azure Front Door global HTTP(S) ingress for AKS Fleet
+```
+
+`GatewayClass` does not create an AFD profile by itself. It registers
+the controller that handles Gateways referencing this class.
+
+The controller sets the standard `Accepted` condition on
+`GatewayClass` to report whether the class is supported and correctly
+configured.
+
+#### A.5.4 Global Gateway
+
+The application or platform operator applies the Gateway to the hub:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: contoso-global
+  namespace: contoso
+spec:
+  gatewayClassName: fleet-azure-front-door
+  listeners:
+  - name: https
+    protocol: HTTPS
+    port: 443
+    hostname: api.contoso.com
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - group: networking.fleet.azure.com
+        kind: AzureFrontDoorCertificate
+        name: api-tls
+    allowedRoutes:
+      namespaces:
+        from: Same
+```
+
+Candidate Azure mapping:
+
+| Gateway field | AFD mapping |
+|---|---|
+| `gatewayClassName` | Selects Fleet AFD reconciliation |
+| Gateway identity | Dedicated AFD profile and endpoint in the initial isolation model |
+| Listener hostname | AFD custom domain |
+| Listener port/protocol | AFD route forwarding and redirect configuration |
+| TLS reference | AFD-managed or Azure Key Vault certificate intent through an implementation-specific certificate object |
+| `allowedRoutes` | Route attachment and namespace delegation |
+
+Whether one Gateway creates one dedicated AFD profile or delegated
+configuration in a shared profile remains an open decision. A
+dedicated profile is the safer initial ownership model.
+
+#### A.5.5 AzureFrontDoorCertificate candidate CRD
+
+AFD cannot bind a Kubernetes TLS Secret directly. Customer-provided
+certificates must be available through Azure Key Vault. A
+provider-specific certificate object avoids implying that AFD reads a
+Secret and gives the Gateway listener one authoritative certificate
+reference.
+
+AFD-managed certificate example:
+
+```yaml
+apiVersion: networking.fleet.azure.com/v1alpha1
+kind: AzureFrontDoorCertificate
+metadata:
+  name: api-tls
+  namespace: contoso
+spec:
+  mode: Managed
+```
+
+Azure Key Vault example:
+
+```yaml
+apiVersion: networking.fleet.azure.com/v1alpha1
+kind: AzureFrontDoorCertificate
+metadata:
+  name: api-tls
+  namespace: contoso
+spec:
+  mode: KeyVaultReference
+  keyVaultSecretResourceID: /subscriptions/.../vaults/contoso/secrets/api-tls
+```
+
+Candidate validation:
+
+- `mode` is `Managed` or `KeyVaultReference`;
+- `keyVaultSecretResourceID` is required only for
+  `KeyVaultReference`;
+- the controller identity must have the required Key Vault and AFD
+  permissions;
+- status reports domain validation, secret resolution, AFD
+  provisioning, and certificate readiness separately; and
+- a Gateway listener can reference only certificate kinds supported
+  by the Fleet AFD controller.
+
+Importing a Kubernetes Secret into Key Vault could be added as a
+future explicit mode, but it is not a native AFD binding and would
+introduce secret replication, rotation, and ownership requirements.
+
+#### A.5.6 HTTPRoute to ServiceImport
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: api
+  namespace: contoso
+spec:
+  parentRefs:
+  - name: contoso-global
+    sectionName: https
+  hostnames:
+  - api.contoso.com
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /api
+    backendRefs:
+    - group: networking.fleet.azure.com
+      kind: ServiceImport
+      name: api
+      port: 443
+      weight: 1
+```
+
+This backend kind is a Fleet AFD controller extension. The controller
+must:
+
+1. verify that it supports `ServiceImport` references;
+2. resolve the logical Service to eligible member exports;
+3. verify port and application-protocol compatibility;
+4. authorize any cross-namespace reference through `ReferenceGrant`;
+5. create or update an AFD origin group and member origins; and
+6. report `ResolvedRefs` and provider-specific readiness.
+
+The `HTTPRoute.backendRefs[].weight` distributes traffic among
+different logical application backends in one route. It does not
+replace per-cluster regional weights inside one `ServiceImport`;
+those belong in `FleetBackendPolicy`.
+
+#### A.5.7 AzureFrontDoorPolicy candidate CRD
+
+```yaml
+apiVersion: networking.fleet.azure.com/v1alpha1
+kind: AzureFrontDoorPolicy
+metadata:
+  name: contoso-global
+  namespace: contoso
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: contoso-global
+
+  sku: Premium
+
+  resourcePlacement:
+    ownership: FleetManaged
+    resourceGroup: fleet-contoso-global
+
+  waf:
+    mode: Prevention
+    policyResourceID: /subscriptions/.../frontdoorWebApplicationFirewallPolicies/contoso
+
+  diagnostics:
+    enabled: true
+```
+
+Candidate schema:
+
+| Field | Purpose and validation |
+|---|---|
+| `targetRef` | Targets one Gateway in the same namespace unless a cross-namespace policy model is approved |
+| `sku` | `Standard` or `Premium`; immutable when Azure cannot update it safely |
+| `resourcePlacement.ownership` | `CustomerOwned`, `FleetManaged`, or an approved shared model |
+| `resourcePlacement.resourceGroup` | Azure resource group for controller-owned resources |
+| `waf.mode` | `Disabled`, `Detection`, or `Prevention` |
+| `waf.policyResourceID` | Optional referenced WAF policy; required by policy classes that mandate WAF |
+| `diagnostics` | Required diagnostic categories and destination policy |
+
+Example validation:
+
+- `sku=Standard` is rejected when any attached backend requires
+  Private Link.
+- A compliance policy can require `sku=Premium`,
+  `waf.mode=Prevention`, and an approved WAF policy.
+- `waf.mode=Disabled` is valid only when the governing product policy
+  permits it.
+
+This policy should not duplicate listener, domain, or route fields
+already represented by Gateway API.
+
+#### A.5.8 FleetBackendPolicy candidate CRD
+
+```yaml
+apiVersion: networking.fleet.azure.com/v1alpha1
+kind: FleetBackendPolicy
+metadata:
+  name: api
+  namespace: contoso
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: contoso-global
+  backendRef:
+    group: networking.fleet.azure.com
+    kind: ServiceImport
+    name: api
+
+  originProvider: DirectService
+  originConnectivity: PrivateLink
+
+  privateLink:
+    regionStrategy: ClosestSupported
+
+  healthProbe:
+    protocol: HTTPS
+    port: 443
+    path: /healthz
+    method: HEAD
+    intervalSeconds: 30
+
+  placement:
+    strategy: ActiveActive
+    defaultPriority: 1
+    defaultWeight: 100
+    clusterOverrides:
+    - clusterSelector:
+        matchLabels:
+          fleet.azure.com/member-region: eastus
+      priority: 1
+      weight: 150
+    - clusterSelector:
+        matchLabels:
+          fleet.azure.com/member-region: westeurope
+      priority: 1
+      weight: 100
+```
+
+Candidate schema:
+
+| Field | Purpose and validation |
+|---|---|
+| `targetRef` | Targets one Gateway and therefore one AFD profile or delegated profile attachment |
+| `backendRef` | Selects the `ServiceImport` used by routes on that Gateway |
+| `originProvider` | Candidate values: `DirectService` or `ClusterGateway` |
+| `originConnectivity` | `Public` or `PrivateLink` |
+| `privateLink` | Required only for `PrivateLink`; rejected for public origins |
+| `healthProbe` | AFD origin-group HTTP(S) health contract |
+| `placement.strategy` | Candidate values include `ActiveActive` and `ActivePassive` |
+| `defaultPriority` and `defaultWeight` | Defaults for eligible member clusters |
+| `clusterOverrides` | Selector-based regional or cluster priority/weight overrides |
+
+Cross-resource validation:
+
+- `PrivateLink` requires the target Gateway's
+  `AzureFrontDoorPolicy.sku=Premium`.
+- Public and private origins cannot be placed in the same origin
+  group.
+- A selected member must expose origin information compatible with
+  the requested provider and connectivity.
+- A non-HTTP port cannot be attached through an AFD HTTPRoute.
+
+The split between `AzureFrontDoorPolicy` and `FleetBackendPolicy` is
+a candidate boundary. Combining them is possible, but it couples
+profile-level security and billing concerns to application backend
+placement.
+
+Scoping this policy to a Gateway and ServiceImport pair allows the
+same logical `ServiceImport` to be attached to different Gateways with
+different public/private connectivity or regional traffic policy.
+The initial model should reject ambiguous policies for the same
+Gateway/backend pair.
+
+### A.6 Public-origin variation
+
+For public HTTP(S), the member Service exposes a public load balancer
+or public cluster ingress gateway:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: contoso
+spec:
+  type: LoadBalancer
+  selector:
+    app: api
+  ports:
+  - name: https
+    port: 443
+    targetPort: 8443
+```
+
+The policy changes are:
+
+```yaml
+apiVersion: networking.fleet.azure.com/v1alpha1
+kind: AzureFrontDoorPolicy
+metadata:
+  name: contoso-global
+  namespace: contoso
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: contoso-global
+  sku: Standard
+  waf:
+    mode: Disabled
+---
+apiVersion: networking.fleet.azure.com/v1alpha1
+kind: FleetBackendPolicy
+metadata:
+  name: api
+  namespace: contoso
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: contoso-global
+  backendRef:
+    group: networking.fleet.azure.com
+    kind: ServiceImport
+    name: api
+  originProvider: DirectService
+  originConnectivity: Public
+```
+
+WAF can instead be set to Detection or Prevention when supported by
+the selected tier and customer policy. Public-origin readiness must
+include the approved control preventing clients from bypassing AFD.
+
+If managed WAF capabilities or another Premium-only feature are
+required, the profile uses Premium even though the origins are
+public.
+
+### A.7 Shared cluster-ingress variation
+
+In shared-gateway mode, the global API remains on the hub, but AFD
+origins point to one ingress gateway in each member cluster:
+
+```mermaid
+flowchart LR
+    Client[Client] --> AFD[AFD global Gateway]
+    AFD --> EastGateway[East member Gateway]
+    AFD --> WestGateway[West member Gateway]
+    EastGateway --> EastService[East local Service]
+    WestGateway --> WestService[West local Service]
+```
+
+The backend policy selects:
+
+```yaml
+spec:
+  originProvider: ClusterGateway
+  originConnectivity: PrivateLink
+```
+
+Additional requirements:
+
+- Fleet must identify the supported member `GatewayClass`.
+- Local Gateways and routes must be placed or delegated to member
+  clusters.
+- Route status must aggregate global AFD and local Gateway readiness.
+- Capacity, tenancy, and noisy-neighbor policy move to the shared
+  gateway.
+- The origin count, load balancer count, PLS count, and approval
+  burden are lower than direct per-Service mode.
+
+This model must not assume that the global AFD Gateway and local
+member Gateway are implemented by the same controller.
+
+### A.8 Reconciliation mapping
+
+| Kubernetes change | Controller action | Azure result |
+|---|---|---|
+| `GatewayClass` accepted | Register supported controller capabilities | No per-application Azure resource |
+| `Gateway` created | Validate policy and ownership; create profile and endpoint | AFD profile and endpoint |
+| HTTPS listener added | Resolve domain and certificate policy | Custom domain, secret/certificate binding, and route listener behavior |
+| `HTTPRoute` accepted | Resolve parent and backend references | AFD route and URL/host match |
+| `ServiceImport` becomes available | Discover eligible exports | Origin group and origin candidates |
+| `FleetBackendPolicy` changes | Recalculate health, priority, weight, provider, and connectivity for one Gateway/backend attachment | Origin-group and origin updates in the target AFD profile |
+| Member export gains public endpoint | Program public origin when policy permits | AFD public origin |
+| Member export gains PLS ID | Request or update private connectivity | AFD private origin and managed private endpoint |
+| WAF policy changes | Validate allowed mode and reference | AFD security-policy attachment |
+| Cluster becomes ineligible | Drain or disable origin before deletion | Origin removed from client selection |
+| Gateway deleted | Run ownership-aware cleanup | Delete Fleet-owned AFD resources; detach referenced resources |
+
+### A.9 Status and conditions
+
+Standard Gateway API conditions should be used where their semantics
+fit:
+
+| Object | Standard condition | Meaning |
+|---|---|---|
+| `GatewayClass` | `Accepted` | Fleet recognizes and supports the controller class |
+| `Gateway` | `Accepted` | Listeners and attached Azure policy are valid |
+| `Gateway` | `Programmed` | AFD profile, endpoint, and listeners are programmed |
+| `HTTPRoute` parent | `Accepted` | Route is allowed by the Gateway |
+| `HTTPRoute` parent | `ResolvedRefs` | Gateway, ServiceImport, ports, and cross-namespace references resolve |
+
+Fleet/Azure policy status should expose provider-specific lifecycle:
+
+```yaml
+status:
+  observedGeneration: 4
+  resourceIDs:
+    profile: /subscriptions/.../Microsoft.Cdn/profiles/contoso
+    endpoint: /subscriptions/.../afdEndpoints/contoso
+  conditions:
+  - type: Programmed
+    status: "True"
+    reason: AzureResourcesReady
+  - type: WAFReady
+    status: "True"
+    reason: PolicyAttached
+  - type: DomainReady
+    status: "True"
+    reason: CertificateIssued
+```
+
+Backend policy status should include an origin summary:
+
+```yaml
+status:
+  observedGeneration: 7
+  conditions:
+  - type: OriginsProgrammed
+    status: "True"
+    reason: AllEligibleOriginsCreated
+  - type: Ready
+    status: "True"
+    reason: MinimumHealthyOriginsSatisfied
+  origins:
+  - cluster: eastus-prod-1
+    region: eastus
+    connectivity: PrivateLink
+    programmed: true
+    privateLinkApproved: true
+    healthy: true
+  - cluster: westeurope-prod-1
+    region: westeurope
+    connectivity: PrivateLink
+    programmed: true
+    privateLinkApproved: true
+    healthy: true
+```
+
+`Programmed=True` must not imply origin health. `Ready=True` must
+define the minimum healthy-origin and regional policy it evaluates.
+
+### A.10 Namespace and ownership rules
+
+Recommended initial constraints:
+
+- `Gateway`, `HTTPRoute`, policies, and `ServiceImport` reside in the
+  same application namespace on the hub.
+- Cross-namespace route attachment follows `allowedRoutes`.
+- Cross-namespace backend references require `ReferenceGrant`.
+- Azure policy references cannot escalate access to a WAF policy,
+  certificate, subscription, or resource group without controller
+  authorization.
+- One object has one field manager for controller-owned status and
+  finalizers.
+- Azure tags record Kubernetes UID, Fleet, namespace, object name,
+  and ownership class.
+- Deleting a Gateway deletes only Fleet-owned Azure resources.
+- Referenced or shared Azure resources are detached but not deleted.
+
+Shared AFD profiles require a separate delegation, quota, and
+conflict model and should not be the initial default.
+
+### A.11 ATM coexistence
+
+ATM continues to use its existing APIs:
+
+```yaml
+apiVersion: networking.fleet.azure.com/v1beta1
+kind: TrafficManagerProfile
+metadata:
+  name: contoso
+  namespace: contoso
+spec:
+  resourceGroup: contoso-networking
+  monitorConfig:
+    protocol: HTTPS
+    port: 443
+    path: /healthz
+---
+apiVersion: networking.fleet.azure.com/v1beta1
+kind: TrafficManagerBackend
+metadata:
+  name: api
+  namespace: contoso
+spec:
+  profile:
+    name: contoso
+  backend:
+    name: api
+  weight: 100
+```
+
+ATM does not use `GatewayClass`, `Gateway`, or `HTTPRoute` because it
+does not implement an HTTP reverse-proxy Gateway.
+
+Coexistence rules must define:
+
+- whether one `ServiceImport` can be referenced by ATM and AFD during
+  migration;
+- which custom hostname is active;
+- whether a parallel public and private Service is required;
+- when the old endpoint can be removed; and
+- how rollback restores DNS without changing Fleet placement.
+
+### A.12 Open API decisions
+
+The detailed model still requires agreement on:
+
+1. Whether Gateway API is adopted for the product or retained as an
+   alternative to Fleet-specific AFD CRDs.
+2. Whether global objects are customer-visible on a hub cluster or
+   exposed through a managed Fleet API.
+3. Which MCS API group and version is supported.
+4. Whether `ServiceImport` is a supported `HTTPRoute` backend kind.
+5. Whether one Gateway maps to one AFD profile.
+6. Whether `AzureFrontDoorPolicy`, `AzureFrontDoorCertificate`, and
+   `FleetBackendPolicy` are
+   separate CRDs.
+7. Whether the Gateway and ServiceImport pair is the correct policy
+   attachment boundary for origin connectivity.
+8. Whether Gateway API permits the selected implementation-specific
+   `AzureFrontDoorCertificate` reference and how certificate
+   portability should be communicated.
+9. How local Gateway resources are selected and propagated in shared
+   cluster-ingress mode.
+10. How placement selectors, priorities, weights, and administrative
+    disablement interact.
+11. Which conditions remain standard Gateway conditions and which
+    require Fleet-specific policy status.
+12. How CRD conversion and migration work if PR #373 APIs ship before
+    the final model is approved.
