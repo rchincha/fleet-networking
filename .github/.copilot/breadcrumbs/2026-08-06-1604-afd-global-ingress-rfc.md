@@ -171,7 +171,7 @@
   - Identify product lessons without claiming exact feature parity.
   - Success criteria: reviewers understand how the proposed Fleet experience
     relates to established GCP and AWS approaches.
-- [ ] **Task 4.9: Add competitive context to PR #373.**
+- [x] **Task 4.9: Add competitive context to PR #373.**
   - Add a concise version of the competitive landscape to the first-party
     architecture proposal on the PR #373 branch.
   - Clearly state that the cross-team RFC remains the governing architecture
@@ -278,6 +278,8 @@
   and specify traffic-safe member-cluster addition and removal ordering.
 - Removed the RFC metadata line that claimed it superseded the architecture
   draft in PR #373.
+- Updated PR #373's first-party proposal with the evidence-based GKE and
+  Amazon EKS competitive landscape in commit `b69a33d`.
 
 ## Before/After Comparison
 
