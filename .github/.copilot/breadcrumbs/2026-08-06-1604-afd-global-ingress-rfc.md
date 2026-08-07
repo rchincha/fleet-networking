@@ -39,6 +39,8 @@
   questions around multi-region deployments."
 - "also add a early competitive section about GKE (gcp) and EKE (aws)"
 - "PR #373 should also have information about the comptetive landscape"
+- "remove this line \"Supersedes The AFD architecture draft in PR #373,
+  especially docs/first-party/001-afd-global-load-balancing.md\""
 
 ## Plan
 
@@ -176,6 +178,10 @@
     and that PR #373 is implementation evidence.
   - Success criteria: reviewers of either PR see the relevant GKE and Amazon
     EKS context without interpreting the implementation PR as final design.
+- [x] **Task 4.10: Remove the RFC supersession claim.**
+  - Remove the metadata statement that the RFC supersedes the architecture
+    draft in PR #373.
+  - Success criteria: the RFC does not claim replacement of PR #373.
 
 ### Checklist
 
@@ -270,6 +276,8 @@
 - Expanded the multi-region section to separate Fleet placement from global
   traffic policy, define endpoint eligibility, compare AFD and ATM behavior,
   and specify traffic-safe member-cluster addition and removal ordering.
+- Removed the RFC metadata line that claimed it superseded the architecture
+  draft in PR #373.
 
 ## Before/After Comparison
 

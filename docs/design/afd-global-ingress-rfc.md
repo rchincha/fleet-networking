@@ -8,7 +8,6 @@
 | Reviewers | Fleet Manager networking, fleet-networking, AKS networking, Azure Front Door, security |
 | Target | Cross-team architecture agreement before implementation |
 | Publication | Markdown source, with Mermaid diagrams rendered before Microsoft Word export |
-| Supersedes | The AFD architecture draft in PR [#373](https://github.com/Azure/fleet-networking/pull/373), especially `docs/first-party/001-afd-global-load-balancing.md` |
 
 > **Document export note:** Mermaid is the source format for diagrams in
 > this RFC. Before exporting to Microsoft Word, render each Mermaid block
